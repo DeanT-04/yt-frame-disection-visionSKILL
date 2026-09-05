@@ -1,0 +1,22 @@
+# Binaries / build output
+/bin/
+*.exe
+*.test
+*.out
+
+# Go
+vendor/
+
+# Project artifacts — generated media/frames stay in-repo-ignored but on disk
+/outputs/
+/bench/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Agent tooling — session logs/state, not project source
+.reasonix/

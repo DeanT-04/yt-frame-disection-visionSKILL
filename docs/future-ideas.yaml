@@ -1,0 +1,114 @@
+# yt-code-vision-skill — future ideas & decisions log
+# Purpose: capture refinements we do NOT implement yet, so future sessions can
+# pick them up. Add entries as `- idea:` blocks with context and why.
+# Last reviewed: mtWN6oPIi1Y chapter-aware framing round.
+
+# Current behaviour (implemented)
+current_behavior:
+  chapter_start: |
+    Frame extraction starts at the chapter whose title matches a coding-intent
+    keyword: "coding", "code", "build", "implement", "write the", "program",
+    "develop". Override per run with: --start-chapter "<substring>".
+    If nothing matches, we frame from 0:00 (never fail).
+    Chapters come from yt-dlp --write-info-json -> outputs/<id>/chapters/chapters.yaml.
+  bench_window: |
+    --bench fetches video metadata first (yt-dlp --skip-download), then
+    downloads a 5-minute 1080p master STARTING at the coding chapter, so the
+    resolution comparison frames show actual code rather than intro.
+
+# Open questions / future ideas
+ideas:
+  - id: chapter-name-variants
+    title: Broader chapter-name coverage
+    context: |
+      Every creator titles the coding chapter differently. Current keyword list
+      covers common cases but will miss unusual phrasings.
+    candidates:
+      - "Expand keyword list with: walkthrough, tutorial, part 1 build, hands-on, live coding, from scratch"
+      - "Score chapters instead of first-keyword-wins: rank by number of keyword hits, skip 'intro/backtest/setup' negatives"
+      - "Use the LONGEST chapter as a heuristic when no keyword matches (coding usually dominates runtime)"
+      - "Let the user pin the chapter once per channel/video and persist it (chapters_lookup.yaml) so repeat runs are deterministic"
+    effort: low-moderate
+
+  - id: no-chapter-fallback
+    title: Handle videos without chapters
+    context: |
+      Today we assume chapters always exist (user confirmed every incoming video
+      has them). A future upload could lack chapters -> we frame from 0:00.
+    candidates:
+      - "Frame-change detection (scene cut / code appearance) to locate coding start without chapters"
+      - "Fall back to a configurable default offset (e.g. --start 3:38)"
+      - "Skip framing entirely and just store chapters: NaN + a single contact sheet"
+    effort: moderate (scene detection) / low (offset fallback)
+
+  - id: sectioned-download
+    title: Download only the coding section instead of the whole video
+    context: |
+      Currently the extractor downloads the FULL 1080p video (~200MB+ for long
+      uploads) even though we skip the lead-in frames. Saves decode time but not
+      bandwidth/disk for the temp file.
+    candidates:
+      - "Use yt-dlp --download-sections like bench does, from the coding chapter to the end"
+      - "Trade-off: sectioned downloads need re-fetch for non-contiguous later segments; fine while one continuous coding block"
+      - "Worth revisiting when we meet 80+ minute videos"
+    effort: low
+
+  - id: bench-uses-crop
+    title: Run the vision code-read benchmark on CROPPED frames
+    context: |
+      The resolution bench (--bench) currently produces full-frame 144-1080p
+      images. The eventual vision comparison should read ONLY the code pane.
+    candidates:
+      - "Apply crop.json to bench frames per resolution (scale the crop box by res factor)"
+      - "Reuse the vision-inspect skill (separate helper project) per res folder -> per-res .md reports"
+    effort: low (crop already exists)
+
+  - id: frame-naming-semantics
+    title: Make frame timestamps explicit in filenames
+    context: |
+      frame_000001.jpg now means '1s after the coding-chapter start', not
+      '1s into the video'. Confusing when mapping back to video time.
+    candidates:
+      - "Name frames by absolute video time (frame_000218.jpg = Start of Coding)"
+      - "Or write a sidecar manifest (frame index -> absolute second) per run"
+    effort: low
+
+  - id: multi-video-batch
+    title: Batch list of URLs with per-video chapter overrides
+    context: |
+      YT-URL-TEST.txt can hold several URLs; --start-chapter currently applies
+      the same override to all videos.
+    candidates:
+      - "Per-line options in the txt (URL,start-chapter) or a small config"
+      - "chapter_lookup.yaml mapping video_id -> pinned chapter keyword"
+    effort: low
+
+  - id: resume-incremental
+    title: Skip already-extracted frames on re-runs
+    context: |
+      Re-running after a code change re-downloads + re-extracts everything.
+    candidates:
+      - "Keep the temp mp4 between runs (opt-in --keep) and reuse if info json matches"
+      - "Resume frame extraction by counting existing frame_*.jpg"
+    effort: moderate
+
+# ---- Implemented safeguards (see AGENTS.md for the enforced rules) ----
+implemented_safeguards:
+  - id: media-cache
+    what: "Masters persist in outputs/.cache/<id> and outputs/.cache/bench-<id>; re-runs reuse them with zero network."
+    prevents: "Repeated full downloads of the same video (the trigger of the per-IP 403)."
+  - id: pacing
+    what: "Shared outputs/.cache/.last_download pacing file enforces a min gap (20s, VISION_MIN_DOWNLOAD_GAP) between any two media downloads, across runs."
+    prevents: "Back-to-back runs hammering YouTube."
+  - id: throttle-backoff
+    what: "403/429 -> exponential backoff 15s/60s/240s (4 attempts) then clean stop; non-throttle errors abort immediately."
+    prevents: "Tight retry loops making a rate-limit block worse."
+  - id: idempotent-runs
+    what: ".done marker -> already-processed videos are skipped (no network). --fresh redoes."
+    prevents: "Accidental re-download/re-extract churn."
+  - id: trash-not-delete
+    what: "--fresh moves old outputs/<id> to outputs/.trash/ instead of rm -rf; purge-cache is explicit."
+    prevents: "Data loss (the 2026-09-03 mtWN6oPIi1Y incident)."
+  - id: test-sandboxing
+    what: "All tests chdir into t.TempDir(); they never touch the real outputs/ tree."
+    prevents: "Tests destroying real extracted data."

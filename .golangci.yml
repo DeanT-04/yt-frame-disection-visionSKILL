@@ -1,0 +1,40 @@
+version: "2"
+
+# Minimal, deterministic lint config for this project.
+# Run with: golangci-lint run --fix ./...
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused + friends.
+  default: standard
+  enable:
+    # SAST: flags path traversal (G304), command execution (G204), weak
+    # permissions, etc. in our own code — the class of bug that lived in
+    # urls.go videoID before the id charset whitelist was added.
+    - gosec
+  settings:
+    gosec:
+      # G301/G302/G306 (file/dir permission bits): this CLI writes non-secret
+      # output artifacts (frames, chapters.yaml, crop.json, the pacing
+      # timestamp) that are meant to be world-readable.
+      #
+      # G304 (file inclusion): gosec's default "audit" mode flags EVERY
+      # os.ReadFile/os.Open/os.Create with a variable path — and reading/writing
+      # a local output tree by validated id IS this tool's whole job, so it
+      # produces constant false positives. The actual path-traversal defense is
+      # the id charset whitelist in urls.go videoID (covered by unit tests), not
+      # per-call lint annotations.
+      excludes:
+        - G301
+        - G302
+        - G304
+        - G306
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/DeanT-04/yt-code-vision-skill
