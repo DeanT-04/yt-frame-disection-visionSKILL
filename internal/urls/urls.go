@@ -1,4 +1,7 @@
-package main
+// Package urls loads a plain-text list of video URLs and parses the canonical
+// 11-character YouTube video id out of the common URL shapes. The id is the
+// single gate every output path and download URL derives from.
+package urls
 
 import (
 	"fmt"
@@ -27,10 +30,10 @@ func isYouTubeHost(host string) bool {
 	return false
 }
 
-// loadURLs reads video URLs from a plain-text file: one URL per line, blank
+// LoadURLs reads video URLs from a plain-text file: one URL per line, blank
 // lines and lines starting with '#' are ignored. Defaults live in a root txt
 // file (e.g. YT-URL-TEST.txt) — nothing is ever fetched outside this project.
-func loadURLs(path string) ([]string, error) {
+func LoadURLs(path string) ([]string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read url file: %w", err)
@@ -49,14 +52,14 @@ func loadURLs(path string) ([]string, error) {
 	return out, nil
 }
 
-// videoID extracts the 11-char YouTube video id from common URL shapes:
+// VideoID extracts the 11-char YouTube video id from common URL shapes:
 //
 //	https://youtu.be/<id>?si=...
 //	https://www.youtube.com/watch?v=<id>&list=...
 //	https://www.youtube.com/shorts/<id>
 //	https://www.youtube.com/embed/<id>
 //	https://www.youtube.com/live/<id>
-func videoID(raw string) (string, error) {
+func VideoID(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("empty URL")

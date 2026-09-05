@@ -1,10 +1,11 @@
 # Project rules (yt-code-vision-skill)
 
 ## Project
-Single-package Go CLI that downloads YouTube videos and extracts 1fps frames +
-chapter metadata for code-reading workflows. Pure stdlib (no Go dependencies);
-shells out to `yt-dlp` (download), `ffmpeg` (frame extraction) and `ffprobe`
-(duration). Entry point `main.go`; input is a txt of URLs (default
+Go CLI that downloads YouTube videos and extracts 1fps frames + chapter
+metadata for code-reading workflows. Stdlib-first (one dependency —
+`gopkg.in/yaml.v3` for spec-compliant chapters.yaml); shells out to `yt-dlp`
+(download), `ffmpeg` (frame extraction) and `ffprobe` (duration). Entry point
+`cmd/yt-code-vision-skill/main.go`; input is a txt of URLs (default
 `YT-URL-TEST.txt`).
 
 ## Golden rules
@@ -32,10 +33,11 @@ whenever anything looks off:
 - Do not hand-edit formatting to "look right"; let the tools do it.
 
 ## Layout
-Flat and small on purpose. `main.go` = entry point. Add packages only when the
-single file stops being obviously simpler.
+Standard Go layout: one thin `main` package under `cmd/`, library code under
+`internal/` (each package owns one concern). Add a package only when a body of
+code is self-contained enough to warrant it.
 
-Per-video output layout (see `paths.go` — always use those helpers, never
+Per-video output layout (see `internal/paths` — always use those helpers, never
 hardcode paths):
 - `outputs/<id>/frames/` — full-res 1fps frames
 - `outputs/<id>/chapters/chapters.yaml`
@@ -46,16 +48,18 @@ hardcode paths):
 - `bench/<id>/<res>p/` — benchmark frames (top-level, by design)
 
 ## Architecture
-Flat `package main` on purpose (files act as modules — add a package only when
-the single package stops being obviously simpler):
-- `main.go` — entry point, flag parsing (`config`), per-URL dispatch, `processVideo`.
-- `video.go` — cache-aware `yt-dlp` download, throttle/backoff ladder, `runCmd`, `ffprobe` duration.
-- `cache.go` — persistent media cache, cross-run pacing, trash, `--purge-cache`, `.done` marker.
-- `frames.go` / `bench.go` — ffmpeg frame extraction (`extractFrames`/`extractScaled`); bench resolution ladder.
-- `chapters.go` — chapters.yaml writer; `chapterstart.go` — coding-chapter start-offset detection.
-- `urls.go` — URL file loading + 11-char video-id parsing.
-- `crop.go` / `crop_cmd.go` / `crop_ref.go` / `greenbox.go` — code-pane crop detection & application.
-- `paths.go` — output layout helpers (always use these, never hardcode paths).
+- `cmd/yt-code-vision-skill` — entry point, flag parsing (`config`), per-URL
+  dispatch, `processVideo` orchestration.
+- `internal/media` — cache-aware `yt-dlp` download, throttle/backoff ladder,
+  missing-JS-runtime fast-fail, `RunCmd`, `ffprobe` duration.
+- `internal/cache` — persistent media cache, cross-run pacing, trash,
+  `--purge-cache`, `.done` marker.
+- `internal/frames` — ffmpeg frame extraction (`ExtractFrames`/`ExtractScaled`).
+- `internal/bench` — resolution ladder + 5-min master window.
+- `internal/chapter` — chapters.yaml writer + coding-chapter start-offset detection.
+- `internal/crop` — code-pane crop detection (`detectCodeRect`, `findGreenBox`) & application.
+- `internal/urls` — URL file loading + 11-char video-id parsing.
+- `internal/paths` — output layout helpers (always use these, never hardcode paths).
 
 ## Anti-rate-limit & safety rules (do NOT violate)
 - **Never delete `outputs/` data with `rm -rf`.** Destructive redo uses
@@ -63,26 +67,27 @@ the single package stops being obviously simpler):
   re-runs (`.done` marker skips finished videos) over deleting.
 - **Do not delete or hand-clear `outputs/.cache`** — that is what prevents
   re-downloading the same video (which is what triggered YouTube's per-IP 403
-  block). Use `go run . --purge-cache` only when explicitly asked.
-- **Never bypass the pacing/backoff in `downloadVideo`.** Media downloads are
+  block). Use `go run ./cmd/yt-code-vision-skill --purge-cache` only when explicitly asked.
+- **Never bypass the pacing/backoff in `media.DownloadVideo`.** Media downloads are
   spaced by a shared minimum gap (20s default) and 403/429 gets exponential
   backoff (15s/60s/240s) then a clean stop. Do not loop downloads manually to
   "get past" a 403 — that makes the block worse.
 - **Tests must never write to the real `outputs/` tree** — chdir into a temp
-  sandbox or use `t.TempDir()`. (See `hardening_test.go`.)
+  sandbox or use `t.TempDir()`. (See `internal/cache/cache_test.go`.)
 - If a download is 403-blocked, report it and wait/retry later — never hammer.
 
 ## Commands
 - `./dev.sh` — format + lint-fix + vet + test + govulncheck + build (prints `all clean`); `./dev.sh fmt|lint|vuln|check` for stages
 - `govulncheck` is installed via `go install golang.org/x/vuln/cmd/govulncheck@latest` (dev.sh skips it gracefully if absent)
-- `go build ./...` / `go test ./...` — direct equivalents (build writes `bin/app.exe`)
-- `go run .` — process URLs in the txt (idempotent; `.done` skips finished videos)
-- `go run . --fresh` — redo a video (old data -> outputs/.trash)
+- `go build ./...` / `go test ./...` — direct equivalents (build writes `bin/yt-code-vision-skill(.exe)`)
+- `go run ./cmd/yt-code-vision-skill` — process URLs in the txt (idempotent; `.done` skips finished videos)
+- `go run ./cmd/yt-code-vision-skill --fresh` — redo a video (old data -> outputs/.trash)
 - `go run . --purge-cache` — explicitly delete cache + trash
-- `go run . --bench` — 5-min frames at 144/240/360/480/720/1080p -> bench/<id>/<res>p/
-- `go run . --find-crop` — auto-detect code pane -> crop.json + preview
-- `go run . --crop-from-ref <png>` — green-box detect on a reference image -> crop.json
-- `go run . --crop-frames` — apply crop.json to all frames -> outputs/<id>/crop/
+- `go run ./cmd/yt-code-vision-skill --bench` — 5-min frames at 144/240/360/480/720/1080p -> bench/<id>/<res>p/
+- `go run ./cmd/yt-code-vision-skill --bench-verdict` — vision-model readability verdict per resolution -> bench/<id>/verdict.md
+- `go run ./cmd/yt-code-vision-skill --find-crop` — auto-detect code pane -> crop.json + preview
+- `go run ./cmd/yt-code-vision-skill --crop-from-ref <png>` — green-box detect on a reference image -> crop.json
+- `go run ./cmd/yt-code-vision-skill --crop-frames` — apply crop.json to all frames -> outputs/<id>/crop/
 - Overrides: `--input <txt>`, `--height <px>`, `--start-chapter <keyword>`
 
 ## Notes

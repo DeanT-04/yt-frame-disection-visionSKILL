@@ -53,7 +53,7 @@ do_check() {
   do_vuln
   echo "[dev] go build ./... (-> bin/)"
   mkdir -p bin
-  go build -o bin/app.exe .
+  go build -o bin/ ./cmd/yt-code-vision-skill
   # After --fix, formatting must already be clean; enforce it:
   if ! gofmt -l . >/dev/null; then :; fi
   unformatted=$(gofmt -l .)

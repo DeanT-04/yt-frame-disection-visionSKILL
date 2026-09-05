@@ -1,16 +1,18 @@
-package main
+package crop
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/DeanT-04/yt-code-vision-skill/internal/paths"
 )
 
-// findCropCmd analyzes a representative frame of a video and writes crop.json
+// FindCrop analyzes a representative frame of a video and writes crop.json
 // + an annotated preview PNG (into previews/). It needs a frame that shows the
 // IDE with code on screen; it auto-picks the best code frame from
 // outputs/<id>/frames/.
-func findCropCmd(id string) error {
+func FindCrop(id string) error {
 	frame, err := pickRepresentativeFrame(id)
 	if err != nil {
 		return err
@@ -23,7 +25,7 @@ func findCropCmd(id string) error {
 	if err != nil {
 		return err
 	}
-	root := idDir(id)
+	root := paths.IDDir(id)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
@@ -38,7 +40,7 @@ func findCropCmd(id string) error {
 	}
 
 	// Annotated preview: original frame + green outline of the detected pane.
-	prevDir := previewsDir(id)
+	prevDir := paths.PreviewsDir(id)
 	if err := os.MkdirAll(prevDir, 0o755); err != nil {
 		return err
 	}
@@ -57,49 +59,58 @@ func findCropCmd(id string) error {
 	return nil
 }
 
-// cropFramesCmd applies the saved crop.json to every frame of a video,
-// writing the cropped code panes into outputs/<id>/crop/. Uses an existing
-// crop.json (auto-detected or manually edited) — refuses to run without one.
-func cropFramesCmd(id string) error {
-	srcDir := idDir(id)
-	crop, err := readCropJSON(srcDir)
+// CropFrames applies the saved crop.json to every frame of a video, writing
+// the cropped code panes into outputs/<id>/crop/. Uses an existing crop.json
+// (auto-detected or manually edited) — refuses to run without one.
+func CropFrames(id string) error {
+	srcDir := paths.IDDir(id)
+	c, err := readCropJSON(srcDir)
 	if err != nil {
 		return fmt.Errorf("need crop.json first (run --find-crop): %w", err)
 	}
-	frameDir := framesDir(id)
-	frames, err := filepath.Glob(filepath.Join(frameDir, "frame_*.jpg"))
+	outDir := paths.CropsDir(id)
+	n, total, err := CropDir(paths.FramesDir(id), outDir, *c)
 	if err != nil {
 		return err
 	}
-	if len(frames) == 0 {
-		return fmt.Errorf("no frames in %s (run the extractor first)", frameDir)
-	}
-	outDir := cropsDir(id)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return err
-	}
+	fmt.Printf("cropped %d/%d frames -> %s (crop x=%d y=%d w=%d h=%d)\n", n, total, outDir, c.X, c.Y, c.Width, c.Height)
+	return nil
+}
 
-	rect := crop.imageRect()
+// CropDir crops every JPEG in srcDir into dstDir using rect (already in src
+// pixel coordinates), writing same-named files. Returns frames written and
+// total found.
+func CropDir(srcDir, dstDir string, rect CropRect) (int, int, error) {
+	frames, err := filepath.Glob(filepath.Join(srcDir, "frame_*.jpg"))
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(frames) == 0 {
+		return 0, 0, fmt.Errorf("no frames in %s", srcDir)
+	}
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return 0, 0, err
+	}
+	r := rect.imageRect()
 	n := 0
 	for _, f := range frames {
 		img, err := decodeImage(f)
 		if err != nil {
-			return fmt.Errorf("decode %s: %w", f, err)
+			return 0, 0, fmt.Errorf("decode %s: %w", f, err)
 		}
 		// Crop against image bounds defensively (screenshots/videos may vary).
-		b := img.Bounds().Intersect(rect)
+		b := img.Bounds().Intersect(r)
 		if b.Empty() {
 			continue
 		}
 		sub := imageSubImage(img, b)
-		out := filepath.Join(outDir, filepath.Base(f))
+		out := filepath.Join(dstDir, filepath.Base(f))
 		if err := encodeJPEG(out, sub, 90); err != nil {
-			return err
+			return 0, 0, err
 		}
 		n++
 	}
-	fmt.Printf("cropped %d/%d frames -> %s (crop x=%d y=%d w=%d h=%d)\n", n, len(frames), outDir, crop.X, crop.Y, crop.Width, crop.Height)
-	return nil
+	return n, len(frames), nil
 }
 
 // pickRepresentativeFrame finds a frame that plausibly shows the IDE with code:
@@ -107,7 +118,7 @@ func cropFramesCmd(id string) error {
 // coverage and returns the best one. Falls back to the first frame if only a
 // few exist.
 func pickRepresentativeFrame(id string) (string, error) {
-	frames, err := filepath.Glob(filepath.Join(framesDir(id), "frame_*.jpg"))
+	frames, err := filepath.Glob(filepath.Join(paths.FramesDir(id), "frame_*.jpg"))
 	if err != nil {
 		return "", err
 	}

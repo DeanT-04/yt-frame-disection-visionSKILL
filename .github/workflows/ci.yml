@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Formatting gate: mirrors ./dev.sh's "gofmt -l . must be empty".
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+
+      # Lint with --fix (gofmt + goimports formatters + gosec per .golangci.yml),
+      # then require the working tree to still be clean — any auto-fix proves
+      # the committed code wasn't already clean, exactly like ./dev.sh enforces.
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.12.2
+          args: --fix
+
+      - name: verify no lint-fixable changes remain
+        run: git diff --exit-code
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+
+      - name: go build
+        run: go build ./...

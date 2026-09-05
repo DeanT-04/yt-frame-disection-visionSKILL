@@ -1,17 +1,19 @@
-package main
+package crop
 
 import (
 	"fmt"
 	"image"
 	"os"
 	"path/filepath"
+
+	"github.com/DeanT-04/yt-code-vision-skill/internal/paths"
 )
 
-// cropFromRefCmd detects the green-outline box on a reference image and writes
+// CropFromRef detects the green-outline box on a reference image and writes
 // crop.json for a video, scaled from the reference resolution to the target
 // frame resolution. The reference is expected to show the same screen layout
 // as the video (e.g. a marked-up screenshot of the actual frame).
-func cropFromRefCmd(id, refPath string) error {
+func CropFromRef(id, refPath string) error {
 	refImg, err := decodeImage(refPath)
 	if err != nil {
 		return fmt.Errorf("decode ref %s: %w", refPath, err)
@@ -47,7 +49,7 @@ func cropFromRefCmd(id, refPath string) error {
 		return fmt.Errorf("scaled crop has zero/negative area: %s", scaled.String())
 	}
 
-	root := idDir(id)
+	root := paths.IDDir(id)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
@@ -63,7 +65,7 @@ func cropFromRefCmd(id, refPath string) error {
 	}
 
 	// Annotated preview on the reference image so the box is easy to eyeball.
-	prevDir := previewsDir(id)
+	prevDir := paths.PreviewsDir(id)
 	if err := os.MkdirAll(prevDir, 0o755); err != nil {
 		return err
 	}

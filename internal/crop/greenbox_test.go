@@ -1,4 +1,4 @@
-package main
+package crop
 
 import (
 	"image"
@@ -8,7 +8,7 @@ import (
 
 // makeGreenBorderedRef builds a synthetic reference: dark content, a bright
 // green 3px outline rectangle from (360,120) to (1890,790), mimicking the
-// measured layout of image ref/ref image.png.
+// measured layout of testdata/fixtures/ref_image.png.
 func makeGreenBorderedRef(w, h, x0, y0, x1, y1 int) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	bg := color.RGBA{R: 245, G: 245, B: 245, A: 255}

@@ -6,11 +6,17 @@
 # Current behaviour (implemented)
 current_behavior:
   chapter_start: |
-    Frame extraction starts at the chapter whose title matches a coding-intent
-    keyword: "coding", "code", "build", "implement", "write the", "program",
-    "develop". Override per run with: --start-chapter "<substring>".
-    If nothing matches, we frame from 0:00 (never fail).
-    Chapters come from yt-dlp --write-info-json -> outputs/<id>/chapters/chapters.yaml.
+    Frame extraction starts at the chapter scored highest for coding intent:
+    weighted positive keywords ("coding", "code", "build", "implement",
+    "write the", "program", "develop", plus walkthrough/tutorial/hands-on/
+    live coding/from scratch), discounted by negative keywords ("intro",
+    "backtest", "setup", "overview", "outro", "q&a", "recap", "thanks",
+    "conclusion"). If nothing scores positive, the longest non-negative
+    chapter is used as a fallback; if there are no qualifying chapters we
+    frame from 0:00 (never fail). Override per run with: --start-chapter
+    "<substring>". Chapters come from yt-dlp --write-info-json ->
+    outputs/<id>/chapters/chapters.yaml (spec-compliant yaml.v3; empty
+    chapters write "chapters: null").
   bench_window: |
     --bench fetches video metadata first (yt-dlp --skip-download), then
     downloads a 5-minute 1080p master STARTING at the coding chapter, so the
@@ -29,6 +35,7 @@ ideas:
       - "Use the LONGEST chapter as a heuristic when no keyword matches (coding usually dominates runtime)"
       - "Let the user pin the chapter once per channel/video and persist it (chapters_lookup.yaml) so repeat runs are deterministic"
     effort: low-moderate
+    status: implemented (scored positives + negatives + longest fallback; the per-channel pin idea is still open)
 
   - id: no-chapter-fallback
     title: Handle videos without chapters
@@ -62,6 +69,7 @@ ideas:
       - "Apply crop.json to bench frames per resolution (scale the crop box by res factor)"
       - "Reuse the vision-inspect skill (separate helper project) per res folder -> per-res .md reports"
     effort: low (crop already exists)
+    status: implemented (--bench-verdict crops each res, runs vision-inspect, diffs vs 1080p, writes bench/<id>/verdict.md)
 
   - id: frame-naming-semantics
     title: Make frame timestamps explicit in filenames
@@ -92,6 +100,46 @@ ideas:
       - "Resume frame extraction by counting existing frame_*.jpg"
     effort: moderate
 
+# ---- Root-caused incidents ----
+resolved_incidents:
+  - id: 2026-09-05-403-media-only
+    what: |
+      go run . always died at stage 3 (media download) with
+      "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+      even though metadata (title/duration/chapters) always succeeded — see
+      PIPELINE-403-EVIDENCE.md for the full repro. 4-attempt backoff ladder
+      ran to completion every time; waiting longer between runs did not help.
+    root_cause: |
+      yt-dlp (2025.11.12+) requires an external JS runtime (Deno/Node/Bun/
+      QuickJS) to solve YouTube's signature challenge for the normal clients.
+      Without one it silently falls back to non-JS clients (here:
+      "android vr player API JSON") — which explains why metadata always
+      worked. YouTube has been actively 403-blocking that fallback client's
+      actual media fetches since ~Aug 2026 (yt-dlp issues #17456, #16150 —
+      open/unresolved upstream, not a version-specific yt-dlp bug we can wait
+      out). This project's own `--no-warnings` flag suppressed yt-dlp's
+      "No supported JavaScript runtime could be found" warning, which is
+      exactly what would have pointed at this immediately.
+    fix: |
+      1. Environment: install a JS runtime — Deno recommended
+         (`scoop install deno`, matches the existing yt-dlp scoop install).
+      2. Code: dropped --no-warnings so this diagnostic surfaces by default;
+         added isMissingJSRuntime() to short-circuit the throttle backoff
+         ladder for this deterministic failure instead of burning ~5.5 min
+         reproducing it every run; added a best-effort hasJSRuntime() PATH
+         check that warns before even attempting a download.
+    caveat: |
+      Installing a JS runtime fixes the specific "no runtime -> android_vr
+      fallback -> 403" path this report evidenced. It is NOT a guaranteed
+      permanent fix: YouTube's client-level blocking is a moving target
+      (yt-dlp issue #16150 shows android_vr itself going erratic even WITH a
+      JS runtime present). If 403s return after installing a runtime, re-run
+      with a fresh `yt-dlp -U` first, and only then consider testing
+      --extractor-args "youtube:player_client=..." per
+      https://github.com/voc0der/ytdl-material/wiki/Fixing-403-errors —
+      do NOT hardcode a fixed client fallback list long-term; that has
+      already broken other projects when the pinned client stopped working.
+
 # ---- Implemented safeguards (see AGENTS.md for the enforced rules) ----
 implemented_safeguards:
   - id: media-cache
@@ -112,3 +160,9 @@ implemented_safeguards:
   - id: test-sandboxing
     what: "All tests chdir into t.TempDir(); they never touch the real outputs/ tree."
     prevents: "Tests destroying real extracted data."
+  - id: nonzero-exit-on-failure
+    what: "main() tracks per-URL failures and os.Exit(1)s if any occurred, instead of always returning 0."
+    prevents: "Shell/agent automation silently treating a fully-blocked run as success (had to grep stderr for FAIL before)."
+  - id: pace-on-failed-attempts-too
+    what: "markDownloaded() (pacing stamp) is now called after every real yt-dlp media attempt, success or 403/429, not just success."
+    prevents: "A run that fails all 4 attempts leaving zero pacing trace, so an impatient re-run stacks another 4 hits with no inter-run spacing."

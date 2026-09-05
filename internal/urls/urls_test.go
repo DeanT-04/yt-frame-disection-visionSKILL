@@ -1,4 +1,4 @@
-package main
+package urls
 
 import "testing"
 
@@ -22,12 +22,12 @@ func TestVideoID(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := videoID(c.in)
+			got, err := VideoID(c.in)
 			if err != nil {
-				t.Fatalf("videoID(%q) error: %v", c.in, err)
+				t.Fatalf("VideoID(%q) error: %v", c.in, err)
 			}
 			if got != c.want {
-				t.Fatalf("videoID(%q) = %q, want %q", c.in, got, c.want)
+				t.Fatalf("VideoID(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
 	}
@@ -52,8 +52,8 @@ func TestVideoIDRejects(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := videoID(c.in); err == nil {
-				t.Fatalf("videoID(%q) expected error, got none", c.in)
+			if _, err := VideoID(c.in); err == nil {
+				t.Fatalf("VideoID(%q) expected error, got none", c.in)
 			}
 		})
 	}
