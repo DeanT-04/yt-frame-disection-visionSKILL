@@ -27,11 +27,16 @@ human) can read the code directly instead of scrubbing the timeline.
 ## Prerequisites
 
 - **Go 1.24+**
-- **yt-dlp** (a recent version; it needs a JS runtime — **Deno** — to solve
-  YouTube's signature challenge)
-- **ffmpeg** and **ffprobe**
+- **yt-dlp**, kept current — the Aug-2026 YouTube regression (yt-dlp #17456)
+  made earlier stable builds (e.g. 2026.07.04) return `HTTP 403` on every media
+  download while metadata still worked; `scoop update yt-dlp` to ≥ 2026.08.19
+  fixed it. If downloads suddenly 403, update yt-dlp before anything else.
 - **Deno** — yt-dlp only auto-enables Deno by default (`node`/`bun` are ignored
-  unless `--js-runtimes` is passed)
+  unless `--js-runtimes` is passed) and needs a JS runtime to solve YouTube's
+  signature challenge; without one it silently falls back to clients YouTube
+  blocks. The tool detects this and fast-fails with a clear "install Deno"
+  message instead of burning a 5-minute backoff.
+- **ffmpeg** and **ffprobe**
 - `--bench-verdict` additionally needs **Node**, the `vision-inspect` helper,
   and a **DeepSeek API key**.
 
