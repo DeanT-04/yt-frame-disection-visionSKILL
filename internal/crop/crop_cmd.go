@@ -77,6 +77,21 @@ func CropFrames(id string) error {
 	return nil
 }
 
+// Single crops one image file srcPath to dstPath using rect (in src full-frame
+// coordinates), writing a high-quality JPEG. Used for per-state vision reads so
+// we don't have to crop every frame up front.
+func Single(srcPath, dstPath string, rect CropRect) error {
+	img, err := decodeImage(srcPath)
+	if err != nil {
+		return fmt.Errorf("decode %s: %w", srcPath, err)
+	}
+	b := img.Bounds().Intersect(rect.imageRect())
+	if b.Empty() {
+		return fmt.Errorf("crop rect %+v is outside %s bounds %v", rect, srcPath, img.Bounds())
+	}
+	return encodeJPEG(dstPath, imageSubImage(img, b), 95)
+}
+
 // CropDir crops every JPEG in srcDir into dstDir using rect (already in src
 // pixel coordinates), writing same-named files. Returns frames written and
 // total found.

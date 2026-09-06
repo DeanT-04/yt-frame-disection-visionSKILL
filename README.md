@@ -37,8 +37,13 @@ human) can read the code directly instead of scrubbing the timeline.
   blocks. The tool detects this and fast-fails with a clear "install Deno"
   message instead of burning a 5-minute backoff.
 - **ffmpeg** and **ffprobe**
-- `--bench-verdict` additionally needs **Node**, the `vision-inspect` helper,
-  and a **DeepSeek API key**.
+- `--bench-verdict` and `--extract-code` additionally need **Node**, the
+  `vision-inspect` helper, and a **DeepSeek API key**.
+- **bgutil-ytdlp-pot-provider** — yt-dlp's `bgutil` proof-of-origin-token
+  plugin wants its local HTTP server (`node
+  ~/bgutil-ytdlp-pot-provider/server/build/main.js`, port 4416). Without it,
+  downloads fail with a Deno `generate_once.ts` timeout before yt-dlp even
+  reaches the media URL.
 
 ## Quickstart
 
@@ -65,6 +70,11 @@ downloaded masters are cached in `outputs/.cache/` for zero-network reuse.
 | `--find-crop` | – | auto-detect the code pane → `crop.json` + preview |
 | `--crop-from-ref <png>` | – | green-box detect on a reference image → `crop.json` |
 | `--crop-frames` | – | apply `crop.json` to all frames |
+| `--extract-code` | – | reconstruct source code: detect states, vision-transcribe each, merge into `code/reconstructed.mq5` |
+| `--dry-run` | – | with `--extract-code`: detect states and print a token cost estimate, then stop |
+| `--max-states <n>` | – | with `--extract-code`: cap how many states get transcribed |
+| `--from-state <n>` | – | with `--extract-code`: resume from state `n` |
+| `--workers <n>` | `4` | with `--extract-code`: parallel vision transcriptions |
 | `--fresh` | – | redo a video (old data moved to `outputs/.trash`) |
 | `--purge-cache` | – | delete `outputs/.cache` and `outputs/.trash` |
 
@@ -76,6 +86,11 @@ outputs/<id>/chapters/chapters.yaml
 outputs/<id>/crop.json            code-pane rect (auto or manual)
 outputs/<id>/crop/                cropped code-pane frames
 outputs/<id>/previews/            annotated preview images
+outputs/<id>/code/                --extract-code output:
+  states.json                       detected screen states (frame + second)
+  transcripts/state_XXXXXX.txt      per-state vision transcripts (resumable)
+  reconstructed.mq5                 merged source file
+  review.md / manifest.md           structure lint + state→frame→timestamp map
 outputs/.cache/<id>               cached masters (kept for reuse)
 outputs/.trash/                   data moved aside by --fresh (recoverable)
 bench/<id>/<res>p/                resolution ladder (+ <res>p-crop/)
@@ -94,6 +109,7 @@ flowchart LR
   G --> H[cropped frames]
   C --> I[bench ladder]
   I --> J[vision verdict]
+  G --> K[--extract-code: states<br/>→ vision transcripts → code]
 ```
 
 Details: [ARCHITECTURE.md](ARCHITECTURE.md)

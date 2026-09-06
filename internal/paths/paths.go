@@ -38,3 +38,10 @@ func BenchResDir(id string, heightPx int) string {
 func BenchResCropDir(id string, heightPx int) string {
 	return filepath.Join("bench", id, fmt.Sprintf("%dp-crop", heightPx))
 }
+
+// CodeDir is where the code-extraction pipeline works (outputs/<id>/code).
+func CodeDir(id string) string { return filepath.Join("outputs", id, "code") }
+
+// CodeTranscriptsDir holds one verbatim transcript per state
+// (outputs/<id>/code/transcripts/state_%06d.txt).
+func CodeTranscriptsDir(id string) string { return filepath.Join("outputs", id, "code", "transcripts") }

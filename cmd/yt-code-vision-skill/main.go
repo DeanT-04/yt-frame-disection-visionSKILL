@@ -17,6 +17,7 @@ import (
 	"github.com/DeanT-04/yt-code-vision-skill/internal/cache"
 	"github.com/DeanT-04/yt-code-vision-skill/internal/chapter"
 	"github.com/DeanT-04/yt-code-vision-skill/internal/crop"
+	"github.com/DeanT-04/yt-code-vision-skill/internal/extract"
 	"github.com/DeanT-04/yt-code-vision-skill/internal/frames"
 	"github.com/DeanT-04/yt-code-vision-skill/internal/media"
 	"github.com/DeanT-04/yt-code-vision-skill/internal/paths"
@@ -33,6 +34,11 @@ type config struct {
 	height       string
 	bench        bool
 	benchVerdict bool
+	extractCode  bool
+	dryRun       bool
+	maxStates    int
+	fromState    int
+	workers      int
 	findCrop     bool
 	cropFrames   bool
 	cropRef      string // green-box reference image path (--crop-from-ref)
@@ -48,6 +54,11 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&cfg.height, "height", defaultHeight, "max download height in px (default 1080)")
 	fs.BoolVar(&cfg.bench, "bench", false, "extract 5-min bench frames at 144/240/360/480/720/1080p")
 	fs.BoolVar(&cfg.benchVerdict, "bench-verdict", false, "compare code readability across bench resolutions via the vision skill -> bench/<id>/verdict.md")
+	fs.BoolVar(&cfg.extractCode, "extract-code", false, "transcribe every distinct code state verbatim via the vision skill -> outputs/<id>/code/")
+	fs.BoolVar(&cfg.dryRun, "dry-run", false, "with --extract-code: detect states + project cost, make no API calls")
+	fs.IntVar(&cfg.maxStates, "max-states", 0, "with --extract-code: cap the number of states transcribed (0 = all)")
+	fs.IntVar(&cfg.fromState, "from-state", 0, "with --extract-code: start transcribing at this state index (skip lead-in)")
+	fs.IntVar(&cfg.workers, "workers", 4, "with --extract-code: concurrent vision reads (default 4)")
 	fs.BoolVar(&cfg.findCrop, "find-crop", false, "detect the IDE code pane on a representative frame -> crop.json + preview")
 	fs.StringVar(&cfg.cropRef, "crop-from-ref", "", "detect green outline box on a reference PNG -> crop.json (scaled to frames)")
 	fs.BoolVar(&cfg.cropFrames, "crop-frames", false, "apply crop.json to all frames -> outputs/<id>/crop/")
@@ -105,6 +116,8 @@ func main() {
 			runErr = bench.RunBench(cfg.startCh, cfg.fresh, id)
 		case cfg.benchVerdict:
 			runErr = bench.RunVerdict(id)
+		case cfg.extractCode:
+			runErr = extract.Run(id, cfg.dryRun, cfg.maxStates, cfg.fromState, cfg.workers)
 		default:
 			runErr = processVideo(cfg, id)
 		}
