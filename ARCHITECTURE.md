@@ -39,11 +39,15 @@ paths. No import cycles.
    rung with the vision model and recommends the lowest readable one.
 7. Optional (`--extract-code`): `extract.Run` requires a `crop.json`, detects
    distinct screen states by pixel-diffing downscaled consecutive frames
-   (`DetectStates` → `states.json`), transcribes each state's cropped frame via
-   the `vision-inspect` helper (resumable, worker pool), merges the ordered
-   transcripts into `code/reconstructed.mq5` by tail-overlap alignment
-   (`Reconstruct`), and lints the result for placeholder chars and unbalanced
-   brackets (`CheckStructure`).
+   (`DetectStates` → `states.json`), stages one pane-cropped image per state
+   into `code/states/` plus a `worklist.json` of pending states (the
+   transcription itself is done by a vision agent following the generated
+   `code/README.md` contract — resumable, existing transcripts are never
+   rewritten). It then merges the ordered transcripts into `code/ea.mq5`
+   (`Reconstruct`): line-anchored when the transcript header records the
+   gutter range ("lines A-B"), else tail-overlap alignment; disagreements are
+   applied later-wins and logged to `conflicts.json`. Finally the result is
+   linted for placeholder chars and unbalanced brackets (`CheckStructure`).
 
 ## Key decisions
 
@@ -66,9 +70,12 @@ paths. No import cycles.
   similarity; the lowest rung at ≥90% overlap wins.
 - **Code reconstruction.** States are changes in the code pane, not frames —
   consecutive frames are 160px-wide grayscale-diffed so codec noise and the
-  blinking caret don't split states. Transcript windows are merged with the
-  largest prefix-of-new vs tail-of-file alignment that reaches the file's end,
-  so overlapping re-shows of the same code converge instead of duplicating.
+  blinking caret don't split states. When a transcript header records the
+  visible gutter range, windows merge line-anchored (line A of the window
+  lands on line A of the file; conflicts apply later-wins and are logged);
+  otherwise the largest prefix-of-new vs tail-of-file alignment that reaches
+  the file's end is used, so overlapping re-shows of the same code converge
+  instead of duplicating.
 
 ## Output & cache layout
 

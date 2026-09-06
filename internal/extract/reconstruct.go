@@ -1,9 +1,11 @@
 package extract
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/DeanT-04/yt-code-vision-skill/internal/paths"
@@ -139,23 +141,44 @@ func stripProse(lines []string) []string {
 	return out
 }
 
-// Reconstruct merges the ordered transcripts into the final code file. States
-// are windows over a file that the creator builds top-down; consecutive states
-// overlap, so the merge aligns each new window onto the tail of what it already
-// has (longest exact-line overlap) and appends the newer lines. States that
-// show no code are skipped. Later, identical windows are deduped. Returns the
-// output path and the merged lines.
+// Conflict records one line where two states disagree about the same source
+// line. Conflicting windows are never merged — they are written to
+// conflicts.json so the state gets re-read instead of silently corrupting the
+// output.
+type Conflict struct {
+	State    int    `json:"state"`
+	Frame    int    `json:"frame"`
+	Line     int    `json:"line"`
+	Existing string `json:"existing"`
+	New      string `json:"new"`
+}
+
+// Reconstruct merges the ordered transcripts into the final code file. When a
+// transcript header records the visible gutter line range ("lines A-B"), the
+// merge is line-anchored: line A of the window lands on line A of the
+// accumulated file, disagreements are applied later-wins and recorded in
+// conflicts.json, and lines past the end are appended. Transcripts without a
+// line range fall back to longest tail-overlap alignment. States that show no
+// code are skipped. Returns the output path and the merged lines.
 func Reconstruct(id string, states []State) (string, []string, error) {
 	transDir := paths.CodeTranscriptsDir(id)
 	var file []string
 	prevKey := ""
 	var notes []string
+	var conflicts []Conflict
 
 	for _, st := range states {
 		path := transcriptPath(transDir, st)
 		raw, err := ParseTranscript(path)
+		if os.IsNotExist(err) {
+			continue // not transcribed yet (coarse pass / resumable runs)
+		}
 		if err != nil {
 			return "", nil, fmt.Errorf("read transcript state %d: %w", st.Index, err)
+		}
+		first, _, err := headerLineRange(path)
+		if err != nil {
+			return "", nil, fmt.Errorf("read header state %d: %w", st.Index, err)
 		}
 		lines, hasCode := codeFrom(raw)
 		if !hasCode {
@@ -175,6 +198,15 @@ func Reconstruct(id string, states []State) (string, []string, error) {
 		}
 		prevKey = key
 
+		if first > 0 {
+			merged, cs, nNotes := mergeAnchored(st, lines, first, file)
+			file = merged
+			conflicts = append(conflicts, cs...)
+			notes = append(notes, nNotes...)
+			continue
+		}
+
+		// Fallback: no gutter range — align by longest tail overlap.
 		if len(file) == 0 {
 			file = lines
 			continue
@@ -189,15 +221,99 @@ func Reconstruct(id string, states []State) (string, []string, error) {
 	if len(file) == 0 {
 		return "", nil, fmt.Errorf("reconstruction produced no lines (no code transcripts found)")
 	}
-	outPath := filepath.Join(paths.CodeDir(id), "reconstructed.mq5")
+	outPath := filepath.Join(paths.CodeDir(id), "ea.mq5")
 	body := strings.Join(file, "\n") + "\n"
 	if err := os.WriteFile(outPath, []byte(body), 0o644); err != nil {
+		return "", nil, err
+	}
+	if err := writeConflicts(id, conflicts); err != nil {
 		return "", nil, err
 	}
 	if err := writeNotes(id, notes); err != nil {
 		return "", nil, err
 	}
 	return outPath, file, nil
+}
+
+// mergeAnchored places window lines at gutter line first (line 1 = index 0) in
+// file. Lines inside the existing file are verified; a disagreement is applied
+// (later-wins — the video's later state is closer to the final code, e.g. after
+// a reformat) and recorded as a conflict for the audit trail. Lines past the
+// end are appended, filling any gap with blanks.
+func mergeAnchored(st State, lines []string, first int, file []string) ([]string, []Conflict, []string) {
+	var cs []Conflict
+	var notes []string
+
+	if len(file) == 0 {
+		if first > 1 {
+			notes = append(notes, fmt.Sprintf("state %d (frame_%06d): first visible line is %d — %d leading lines unknown (REVIEW)", st.Index, st.FrameNum, first, first-1))
+			file = make([]string, first-1)
+		}
+		return append(file, lines...), nil, notes
+	}
+
+	for i, ln := range lines {
+		pos := first + i
+		switch {
+		case pos <= len(file):
+			if file[pos-1] != ln {
+				cs = append(cs, Conflict{State: st.Index, Frame: st.FrameNum, Line: pos, Existing: file[pos-1], New: ln})
+				file[pos-1] = ln
+			}
+		default: // pos beyond the file end: fill any gap with blanks, then append
+			if pos > len(file)+1 {
+				notes = append(notes, fmt.Sprintf("state %d (frame_%06d): gap before line %d filled with blanks (REVIEW)", st.Index, st.FrameNum, pos))
+				for len(file) < pos-1 {
+					file = append(file, "")
+				}
+			}
+			file = append(file, ln)
+		}
+	}
+	return file, cs, notes
+}
+
+// headerLineRange extracts the "lines A-B" range from a transcript's header
+// line ("=== state N — frame_F.jpg @ T — lines A-B ==="). Returns 0,0 when the
+// header records no range.
+func headerLineRange(path string) (int, int, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	header := string(b)
+	if i := strings.IndexByte(header, '\n'); i >= 0 {
+		header = header[:i]
+	}
+	j := strings.Index(header, "lines ")
+	if j < 0 {
+		return 0, 0, nil
+	}
+	rest := header[j+len("lines "):]
+	if end := strings.IndexAny(rest, " \t="); end >= 0 {
+		rest = rest[:end]
+	}
+	k := strings.IndexByte(rest, '-')
+	if k <= 0 {
+		return 0, 0, nil
+	}
+	first, err1 := strconv.Atoi(rest[:k])
+	last, err2 := strconv.Atoi(rest[k+1:])
+	if err1 != nil || err2 != nil || first < 1 || last < first {
+		return 0, 0, nil
+	}
+	return first, last, nil
+}
+
+func writeConflicts(id string, conflicts []Conflict) error {
+	if conflicts == nil {
+		conflicts = []Conflict{}
+	}
+	b, err := json.MarshalIndent(conflicts, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(paths.CodeDir(id), "conflicts.json"), append(b, '\n'), 0o644)
 }
 
 // isNoCode reports whether a transcript's answer says the frame had no readable

@@ -1,37 +1,71 @@
 package extract
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/DeanT-04/yt-code-vision-skill/internal/chapter"
 	"github.com/DeanT-04/yt-code-vision-skill/internal/crop"
 	"github.com/DeanT-04/yt-code-vision-skill/internal/paths"
 )
 
-// MQL5Prompt is the character-exact transcription instruction used for every
-// state read. MQL5 is case- and punctuation-sensitive, so the model is told to
-// reproduce the pixels, never to "fix" or paraphrase.
-const MQL5Prompt = `This frame is from a MetaTrader 5 (MQL5) coding tutorial. Transcribe the code exactly as it appears in the editor: every character, letter case, space, tab and indentation, semicolon, brace, parenthesis, quote and comment must match the image. Do NOT describe the image, do NOT comment on the code, do NOT paraphrase, translate, summarize, complete, rename, or "fix" anything. Reply with ONLY the code, inside a single fenced code block tagged mql5. If the editor area shows no code (only a chart, report, terminal, browser, or settings dialog), reply with exactly: <NO CODE>`
+// TranscriptionContract is the instruction set for the agent that reads the
+// staged state images (code/states/state_XXXXXX.jpg) and writes the
+// transcripts. It is written to code/README.md on every staging run so the
+// contract travels with the data.
+const TranscriptionContract = `# Code-state transcription contract
 
-// estTokensPerState is a rough per-read-mode-call input-token estimate used only
-// for the --dry-run cost projection (image + prompt). The proof run measures
-// the real number.
-const estTokensPerState = 2400
+Read each staged image outputs/<id>/code/states/state_XXXXXX.jpg (the cropped
+IDE code pane) with your vision, in temporal order, and write the transcript
+outputs/<id>/code/transcripts/state_XXXXXX.txt with EXACTLY this format:
+
+=== state N — frame_FFFFFF.jpg @ HH:MM:SS — lines A-B ===
+` + "```mql5\n" + `<verbatim code, one source line per output line, indentation preserved>
+` + "```\n" + `
+Rules:
+- N, FFFFFF, HH:MM:SS are copied from worklist.json for that state.
+- A-B is the visible line-number range in the editor gutter (first-last).
+  If no gutter line numbers are visible, omit the "— lines A-B" part.
+- Transcribe the code exactly as pixels show it: every character, case, space,
+  semicolon, brace, quote and comment. Never paraphrase, complete, rename, or
+  "fix" anything.
+- If the pane shows no code (chart, terminal, dialog, browser), write the
+  header line followed by exactly: <NO CODE>
+- One file per state. Existing transcripts are never rewritten (except when a
+  state is flagged in conflicts.json for re-read).
+`
+
+// workEntry is one row of worklist.json: a state waiting to be transcribed.
+type workEntry struct {
+	Index      int     `json:"index"`
+	FrameNum   int     `json:"frame"`
+	FrameFile  string  `json:"frame_file"`
+	Sec        float64 `json:"sec"`
+	Hms        string  `json:"hms"`
+	Image      string  `json:"image"`
+	Transcript string  `json:"transcript"`
+}
+
+// worklist is the staging manifest handed to the transcribing agent.
+type worklist struct {
+	Total   int         `json:"total"`
+	Done    int         `json:"done"`
+	Pending int         `json:"pending"`
+	Entries []workEntry `json:"entries"`
+}
 
 // Run drives the code-extraction pipeline for one video: it detects the ordered
-// code states from the frames, then (unless dryRun) transcribes each state
-// verbatim through the vision-inspect helper. Transcripts are written to
+// code states from the frames, stages a cropped pane image + worklist for each
+// (the transcription itself is done by the agent reading the staged images —
+// see TranscriptionContract), and finally reconstructs the merged code file
+// from whatever transcripts exist. Transcripts are written to
 // outputs/<id>/code/transcripts/state_%06d.txt and are resumable (existing ones
-// are skipped). maxStates caps how many states are processed (0 = all);
-// fromState skips lead-in states; workers runs that many reads concurrently.
-func Run(id string, dryRun bool, maxStates, fromState, workers int) error {
+// are skipped). maxStates caps how many states are worked (0 = all);
+// fromState skips lead-in states.
+func Run(id string, dryRun bool, maxStates, fromState int) error {
 	cr, err := crop.Load(paths.IDDir(id))
 	if err != nil {
 		return fmt.Errorf("need crop.json first (run --find-crop): %w", err)
@@ -40,7 +74,8 @@ func Run(id string, dryRun bool, maxStates, fromState, workers int) error {
 
 	codeDir := paths.CodeDir(id)
 	transDir := paths.CodeTranscriptsDir(id)
-	for _, d := range []string{codeDir, transDir} {
+	statesDir := paths.CodeStatesDir(id)
+	for _, d := range []string{codeDir, transDir, statesDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}
@@ -56,7 +91,6 @@ func Run(id string, dryRun bool, maxStates, fromState, workers int) error {
 		return err
 	}
 
-	// Cap / offset the states we actually transcribe this run.
 	states := all
 	if fromState > 0 {
 		if fromState >= len(states) {
@@ -70,133 +104,85 @@ func Run(id string, dryRun bool, maxStates, fromState, workers int) error {
 
 	fmt.Printf("video %s: %d distinct code states (%d frames scanned, pane %dx%d at %d,%d)\n",
 		id, len(all), stateFrameSpan(all), rect.W, rect.H, rect.X, rect.Y)
-	fmt.Printf("est: %d read-mode vision calls, ~%.0fk input tokens — real cost measured on the run\n",
-		len(states), float64(len(states)*estTokensPerState)/1000)
 	if dryRun {
-		fmt.Println("dry-run: no API calls made. Re-run without --dry-run to transcribe (resumable).")
+		fmt.Println("dry-run: states detected only. Re-run without --dry-run to stage images for transcription.")
 		return nil
 	}
 
-	helper, err := VisionHelper()
+	// Stage: one pane-cropped image per state (idempotent overwrite is fine —
+	// the source frame never changes), plus the worklist of pending transcripts.
+	staged, err := stageStates(id, states, statesDir, rect)
 	if err != nil {
 		return err
 	}
-	if _, err := exec.LookPath("node"); err != nil {
-		return fmt.Errorf("node is required to run the vision-inspect helper: %w", err)
+	if err := os.WriteFile(filepath.Join(codeDir, "README.md"), []byte(TranscriptionContract), 0o644); err != nil {
+		return err
 	}
+	fmt.Printf("staged %d state images into %s\n", staged, statesDir)
 
-	// Transcribe pending states concurrently. The helper analyzes a whole
-	// folder, so each worker stages its state's cropped frame as one.jpg inside
-	// its own scratch subfolder (never shared -> no clobbering).
-	if workers < 1 {
-		workers = 1
-	}
-	var pending []State
-	for _, st := range states {
-		if !fileExists(transcriptPath(transDir, st)) {
-			pending = append(pending, st)
-		}
-	}
-	fmt.Printf("transcribing %d pending states with %d worker(s)...\n", len(pending), workers)
-	var mu sync.Mutex
-	newOnes := 0
-	jobs := make(chan State)
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		scratch := filepath.Join(codeDir, ".read", fmt.Sprintf("w%d", w))
-		if err := os.MkdirAll(scratch, 0o755); err != nil {
+	// Reconstruct from whatever transcripts already exist (none on first run).
+	if transcribed := countTranscripts(transDir); transcribed > 0 {
+		outPath, fileLines, err := Reconstruct(id, states)
+		if err != nil {
 			return err
 		}
-		wg.Add(1)
-		go func(scratch string) {
-			defer wg.Done()
-			for st := range jobs {
-				out := transcriptPath(transDir, st)
-				if err := transcribeOne(helper, scratch, id, st, rect, out); err != nil {
-					fmt.Fprintf(os.Stderr, "state %d failed: %v (left for retry on next run)\n", st.Index, err)
-					continue
-				}
-				mu.Lock()
-				newOnes++
-				mu.Unlock()
-				fmt.Printf("state %3d/%-3d frame %06d @ %s\n", st.Index+1, len(states), st.FrameNum, chapter.Hms(st.Sec))
-			}
-		}(scratch)
-	}
-	for _, st := range pending {
-		jobs <- st
-	}
-	close(jobs)
-	wg.Wait()
-	if newOnes < len(pending) {
-		fmt.Printf("WARNING: %d/%d states failed (transcripts left for retry on the next run)\n", len(pending)-newOnes, len(pending))
-	}
-	fmt.Printf("transcribed %d new states into %s (existing transcripts skipped)\n", newOnes, transDir)
-
-	// Reconstruct the final code file from the ordered transcripts, then run
-	// the structural checks and write the traceability manifest.
-	outPath, fileLines, err := Reconstruct(id, states)
-	if err != nil {
-		return err
-	}
-	if err := WriteManifest(id, states); err != nil {
-		return err
-	}
-	issues := CheckStructure(strings.Join(fileLines, "\n"))
-	fmt.Printf("reconstructed %d lines -> %s\n", len(fileLines), outPath)
-	if len(issues) > 0 {
-		fmt.Printf("structural review flagged %d issue(s) (see outputs/%s/code/review.md):\n", len(issues), id)
-		for _, is := range issues {
-			fmt.Println("  - " + is)
+		if err := WriteManifest(id, states); err != nil {
+			return err
+		}
+		issues := CheckStructure(strings.Join(fileLines, "\n"))
+		fmt.Printf("reconstructed %d lines -> %s\n", len(fileLines), outPath)
+		if len(issues) > 0 {
+			fmt.Printf("structural review flagged %d issue(s) (see outputs/%s/code/review.md)\n", len(issues), id)
+		} else {
+			fmt.Println("structural checks: clean")
 		}
 	} else {
-		fmt.Println("structural checks: clean")
+		fmt.Printf("no transcripts yet — read the staged images per %s and re-run\n", filepath.Join(codeDir, "README.md"))
 	}
 	return nil
 }
 
-// VisionHelper returns the path to the vision-inspect helper (inspect.mjs),
-// overridable via VISION_INSPECT.
-func VisionHelper() (string, error) {
-	if p := os.Getenv("VISION_INSPECT"); p != "" {
-		//nolint:gosec // p is an explicit config path (env override), not user-tainted input; Stat only checks existence
-		if _, err := os.Stat(p); err != nil {
-			return "", fmt.Errorf("VISION_INSPECT %q not found: %w", p, err)
+// stageStates writes the pane-cropped image for every state and worklist.json
+// listing the states still missing a transcript. Returns how many images were
+// written this run.
+func stageStates(id string, states []State, statesDir string, rect Rect) (int, error) {
+	wl := worklist{Total: len(states)}
+	for _, st := range states {
+		img := filepath.Join(statesDir, fmt.Sprintf("state_%06d.jpg", st.Index))
+		frame := filepath.Join(paths.FramesDir(id), fmt.Sprintf("frame_%06d.jpg", st.FrameNum))
+		if err := crop.Single(frame, img, crop.CropRect{X: rect.X, Y: rect.Y, Width: rect.W, Height: rect.H}); err != nil {
+			return 0, fmt.Errorf("crop state %d frame %s: %w", st.Index, frame, err)
 		}
-		return p, nil
+		out := transcriptPath(paths.CodeTranscriptsDir(id), st)
+		if fileExists(out) {
+			wl.Done++
+			continue
+		}
+		wl.Pending++
+		wl.Entries = append(wl.Entries, workEntry{
+			Index:      st.Index,
+			FrameNum:   st.FrameNum,
+			FrameFile:  fmt.Sprintf("frame_%06d.jpg", st.FrameNum),
+			Sec:        st.Sec,
+			Hms:        chapter.Hms(st.Sec),
+			Image:      img,
+			Transcript: out,
+		})
 	}
-	def := filepath.Join(os.Getenv("USERPROFILE"), "Documents", "projects", "vision-inspect", "inspect.mjs")
-	//nolint:gosec // def is a documented default location; Stat only checks existence
-	if _, err := os.Stat(def); err != nil {
-		return "", fmt.Errorf("vision-inspect helper not found at %s — set VISION_INSPECT to its path: %w", def, err)
+	b, err := json.MarshalIndent(wl, "", "  ")
+	if err != nil {
+		return 0, err
 	}
-	return def, nil
+	if err := os.WriteFile(filepath.Join(paths.CodeDir(id), "worklist.json"), b, 0o644); err != nil {
+		return 0, err
+	}
+	return len(states), nil
 }
 
-// transcribeOne crops state st's frame to the pane and asks the vision helper
-// to transcribe it verbatim, writing the transcript to out.
-func transcribeOne(helper, scratch, id string, st State, rect Rect, out string) error {
-	frame := filepath.Join(paths.FramesDir(id), fmt.Sprintf("frame_%06d.jpg", st.FrameNum))
-	one := filepath.Join(scratch, "one.jpg")
-	if err := crop.Single(frame, one, crop.CropRect{X: rect.X, Y: rect.Y, Width: rect.W, Height: rect.H}); err != nil {
-		return fmt.Errorf("crop state %d frame %s: %w", st.Index, frame, err)
-	}
-	//nolint:gosec // "node" is a fixed binary; helper/scratch are file paths passed as argv (never a shell); prompt is a constant
-	cmd := exec.Command("node", helper, scratch, "-q", MQL5Prompt, "--think", "--detail", "original")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("vision read state %d (frame %06d): %w: %s", st.Index, st.FrameNum, err, strings.TrimSpace(stderr.String()))
-	}
-	body := fmt.Sprintf("=== state %d — frame_%06d.jpg @ %s ===\n%s\n",
-		st.Index, st.FrameNum, chapter.Hms(st.Sec), stdout.String())
-	return os.WriteFile(out, []byte(body), 0o644)
-}
-
-// transcriptPath returns outputs/<id>/code/transcripts/state_%06d.txt for st.
-func transcriptPath(transDir string, st State) string {
-	return filepath.Join(transDir, fmt.Sprintf("state_%06d.txt", st.Index))
+// countTranscripts counts transcript files in transDir.
+func countTranscripts(transDir string) int {
+	matches, _ := filepath.Glob(filepath.Join(transDir, "state_*.txt"))
+	return len(matches)
 }
 
 func writeStatesJSON(path string, states []State) error {
@@ -205,6 +191,11 @@ func writeStatesJSON(path string, states []State) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+// transcriptPath returns outputs/<id>/code/transcripts/state_%06d.txt for st.
+func transcriptPath(transDir string, st State) string {
+	return filepath.Join(transDir, fmt.Sprintf("state_%06d.txt", st.Index))
 }
 
 func fileExists(path string) bool {

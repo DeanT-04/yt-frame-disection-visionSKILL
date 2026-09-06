@@ -93,7 +93,7 @@ func TestReconstructMergesWindows(t *testing.T) {
 		t.Errorf("reconstructed =\n%s\nwant:\n%s", strings.Join(lines, "\n"), want)
 	}
 	if _, err := os.Stat(outPath); err != nil {
-		t.Errorf("reconstructed.mq5 missing: %v", err)
+		t.Errorf("ea.mq5 missing: %v", err)
 	}
 	// Manifest is written by the orchestrator (mirrors Run): call it, then
 	// confirm review.md (written by Reconstruct) and manifest.md both exist.
@@ -173,5 +173,51 @@ func TestCheckStructure(t *testing.T) {
 	// Braces inside strings must not count.
 	if issues := CheckStructure("string s = \"{not a brace}\";"); len(issues) != 0 {
 		t.Errorf("string contents flagged as braces: %v", issues)
+	}
+}
+
+func TestHeaderLineRange(t *testing.T) {
+	cases := []struct {
+		header    string
+		firstLast [2]int
+	}{
+		{"=== state 5 — frame_000041.jpg @ 00:12:44 — lines 41-68 ===", [2]int{41, 68}},
+		{"=== state 5 — frame_000041.jpg @ 00:12:44 ===", [2]int{0, 0}},
+		{"=== state 1 — frame_000002.jpg @ 00:00:01 — lines 1-24 ===", [2]int{1, 24}},
+	}
+	for _, c := range cases {
+		p := writeTmp(t, c.header+"\n```mql5\nint a;\n```\n")
+		first, last, err := headerLineRange(p)
+		if err != nil {
+			t.Fatalf("headerLineRange(%q): %v", c.header, err)
+		}
+		if first != c.firstLast[0] || last != c.firstLast[1] {
+			t.Errorf("headerLineRange(%q) = %d,%d want %d,%d", c.header, first, last, c.firstLast[0], c.firstLast[1])
+		}
+	}
+}
+
+func TestMergeAnchoredContinuation(t *testing.T) {
+	file := []string{"int a;", "int b;"}
+	// Window claims gutter lines 2-4: line 2 must match "int b;", 3-4 append.
+	merged, cs, _ := mergeAnchored(State{Index: 1, FrameNum: 5}, []string{"int b;", "int c;", "int d;"}, 2, file)
+	if len(cs) != 0 {
+		t.Fatalf("clean continuation produced conflicts: %+v", cs)
+	}
+	if got := strings.Join(merged, "\n"); got != "int a;\nint b;\nint c;\nint d;" {
+		t.Errorf("merged = %q", got)
+	}
+}
+
+func TestMergeAnchoredConflictLaterWins(t *testing.T) {
+	file := []string{"int a;", "int b;"}
+	// Window claims lines 1-3 but disagrees about line 2: later reading wins
+	// (reformat) and the disagreement is recorded.
+	merged, cs, _ := mergeAnchored(State{Index: 2, FrameNum: 9}, []string{"int a;", "int B;", "int c;"}, 1, file)
+	if len(cs) != 1 || cs[0].Line != 2 || cs[0].Existing != "int b;" || cs[0].New != "int B;" {
+		t.Fatalf("conflicts = %+v, want one on line 2", cs)
+	}
+	if got := strings.Join(merged, "\n"); got != "int a;\nint B;\nint c;" {
+		t.Errorf("merged = %q", got)
 	}
 }

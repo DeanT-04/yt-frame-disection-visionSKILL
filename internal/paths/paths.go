@@ -45,3 +45,7 @@ func CodeDir(id string) string { return filepath.Join("outputs", id, "code") }
 // CodeTranscriptsDir holds one verbatim transcript per state
 // (outputs/<id>/code/transcripts/state_%06d.txt).
 func CodeTranscriptsDir(id string) string { return filepath.Join("outputs", id, "code", "transcripts") }
+
+// CodeStatesDir holds one pane-cropped image per state
+// (outputs/<id>/code/states/state_%06d.jpg), staged for vision transcription.
+func CodeStatesDir(id string) string { return filepath.Join("outputs", id, "code", "states") }
